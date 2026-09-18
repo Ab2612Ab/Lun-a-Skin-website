@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+
+const supabase = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY ? createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY) : null;
 
 const products = [
   { id: 'cloud-veil', name: 'Cloud Veil Cleanser', category: 'Cleanse', type: 'Cream cleanser', price: 28, size: '150 ml', image: 'https://images.unsplash.com/photo-1556229010-6c3f2c9ca5f8?auto=format&fit=crop&w=1200&q=88', copy: 'A soft, cushiony daily cleanser that leaves skin fresh without the tight-after feeling.', tags: ['oat', 'ceramide', 'rose water'] },
@@ -39,10 +42,51 @@ function App() {
   const [quizAnswer, setQuizAnswer] = useState(null);
   const [email, setEmail] = useState('');
   const [notice, setNotice] = useState('');
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [sessionUser, setSessionUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [adminProduct, setAdminProduct] = useState({ name:'', category:'Treat', type:'', price:'', size:'', stock:'', image_url:'', description:'', tags:'' });
+  const [adminProducts, setAdminProducts] = useState(products);
 
   useEffect(() => {
     localStorage.setItem('lunea-cart', JSON.stringify(cart));
   }, [cart]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => { if (data.session) loadProfile(data.session.user); });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => { if (session?.user) loadProfile(session.user); else { setSessionUser(null); setProfile(null); } });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const loadProfile = async (user) => {
+    setSessionUser(user);
+    if (!supabase) return;
+    const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    setProfile(data);
+  };
+
+  const signInOrUp = async (event) => {
+    event.preventDefault();
+    if (!supabase) { setNotice('Secure accounts are ready for Supabase activation.'); return; }
+    const result = authMode === 'signup' ? await supabase.auth.signUp({ email: authEmail, password: authPassword, options: { data: { full_name: authName } } }) : await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+    if (result.error) setNotice(result.error.message); else { setNotice(authMode === 'signup' ? 'Account created. Check your email if confirmation is enabled.' : 'Welcome back.'); setAccountOpen(false); }
+  };
+  const signOut = async () => { if (supabase) await supabase.auth.signOut(); setSessionUser(null); setProfile(null); setAdminOpen(false); setNotice('You have been signed out.'); };
+  const publishProduct = async (event) => {
+    event.preventDefault();
+    if (!supabase || profile?.role !== 'admin') { setNotice('Admin database access is not configured.'); return; }
+    const payload = { name: adminProduct.name, slug: adminProduct.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-'), category: adminProduct.category, type: adminProduct.type, price: Number(adminProduct.price), size: adminProduct.size, stock: Number(adminProduct.stock || 0), image_url: adminProduct.image_url, description: adminProduct.description, tags: adminProduct.tags.split(',').map(x => x.trim()).filter(Boolean), published: true };
+    const { data, error } = await supabase.from('products').insert(payload).select().single();
+    if (error) { setNotice(error.message); return; }
+    setAdminProducts(prev => [data, ...prev]); setAdminProduct({ name:'', category:'Treat', type:'', price:'', size:'', stock:'', image_url:'', description:'', tags:'' }); setNotice('Product published to the storefront.');
+  };
+
 
   const itemCount = cart.reduce((sum, item) => sum + item.qty, 0);
   const total = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
@@ -75,7 +119,7 @@ function App() {
         <button onClick={() => scrollTo('story')}>Our Story</button>
         <button onClick={() => scrollTo('journal')}>Journal</button>
       </nav>
-      <div className="nav-actions"><button className="icon-btn" aria-label="Open bag" onClick={() => setBagOpen(true)}>{icon('bag')}<span>{itemCount}</span></button></div>
+      <div className="nav-actions"><button className="account-btn" onClick={() => setAccountOpen(true)}>{sessionUser ? (profile?.full_name || 'Account') : 'Account'}</button>{profile?.role === 'admin' && <button className="admin-link" onClick={() => setAdminOpen(true)}>Admin</button>}<button className="icon-btn" aria-label="Open bag" onClick={() => setBagOpen(true)}>{icon('bag')}<span>{itemCount}</span></button></div>
     </header>
 
     <main id="top">
@@ -120,6 +164,9 @@ function App() {
     {bagOpen && <div className="modal-backdrop" onClick={() => setBagOpen(false)}><aside className="bag-drawer" onClick={(e) => e.stopPropagation()}><div className="drawer-head"><div><p className="eyebrow">YOUR BAG</p><h2>{itemCount} item{itemCount === 1 ? '' : 's'}</h2></div><button className="close-btn" onClick={() => setBagOpen(false)}>{icon('close', 22)}</button></div>{cart.length ? <><div className="bag-items">{cart.map((item) => <div className="bag-item" key={item.id}><img src={item.image} alt=""/><div><strong>{item.name}</strong><small>${item.price}</small><div className="qty"><button onClick={() => updateQty(item.id, -1)}>−</button><span>{item.qty}</span><button onClick={() => updateQty(item.id, 1)}>+</button></div></div></div>)}</div><div className="bag-summary"><div><span>Subtotal</span><strong>${total.toFixed(2)}</strong></div><small>Taxes and shipping calculated at checkout.</small><button className="button dark full" onClick={() => setNotice('Checkout is ready for your payment gateway integration.')}>Checkout {icon('arrow', 18)}</button></div></> : <div className="empty-bag"><p>Your bag is waiting.</p><button className="button outline" onClick={() => { setBagOpen(false); scrollTo('shop'); }}>Explore products {icon('arrow', 17)}</button></div>}</aside></div>}
 
     {quizOpen && <div className="modal-backdrop" onClick={() => setQuizOpen(false)}><div className="quiz-modal" onClick={(e) => e.stopPropagation()}><button className="close-btn" onClick={() => setQuizOpen(false)}>{icon('close', 22)}</button>{quizStep === 0 && <><p className="eyebrow">MINI ROUTINE QUIZ</p><h2>How does your skin feel most days?</h2><div className="quiz-options">{[['dry','Dry or tight'],['balanced','Mostly balanced'],['oily','Oily or shiny']].map(([value,label]) => <button key={value} onClick={() => { setQuizAnswer(value); setQuizStep(1); }}>{label}{icon('arrow', 17)}</button>)}</div></>}{quizStep === 1 && recommended && <><p className="eyebrow">YOUR STARTING POINT</p><h2>Meet your ritual match.</h2><img className="quiz-product" src={recommended.image} alt={recommended.name}/><strong className="quiz-name">{recommended.name}</strong><p>{recommended.copy}</p><button className="button dark full" onClick={() => { addToCart(recommended); setQuizOpen(false); setBagOpen(true); }}>Add the match to my bag {icon('bag', 17)}</button><button className="text-link center" onClick={() => setQuizStep(0)}>Retake quiz</button></>}</div></div>}
+    {accountOpen && <div className="modal-backdrop" onClick={() => setAccountOpen(false)}><div className="account-modal" onClick={(e) => e.stopPropagation()}><button className="close-btn" onClick={() => setAccountOpen(false)}>{icon('close', 22)}</button>{sessionUser ? <><p className="eyebrow">MY LUNÉA</p><h2>Welcome back.</h2><div className="account-card"><span>{sessionUser.email}</span><strong>{profile?.role === 'admin' ? 'Store administrator' : 'Customer account'}</strong></div>{profile?.role === 'admin' && <button className="button dark full" onClick={() => { setAccountOpen(false); setAdminOpen(true); }}>Open admin studio {icon('arrow', 18)}</button>}<button className="button outline full" onClick={signOut}>Log out</button></> : <><p className="eyebrow">LUNÉA ACCOUNT</p><h2>{authMode === 'login' ? 'Welcome back.' : 'Create your account.'}</h2>{!supabase && <div className="setup-note">Secure customer accounts are wired for Supabase. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel and apply supabase/schema.sql.</div>}<form className="auth-form" onSubmit={signInOrUp}>{authMode === 'signup' && <input required value={authName} onChange={(e) => setAuthName(e.target.value)} placeholder="Full name" />}<input required type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email address" /><input required minLength="8" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password (8+ characters)" /><button className="button dark full">{authMode === 'login' ? 'Sign in' : 'Create account'}</button></form><button className="text-link center" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Create a new account' : 'I already have an account'}</button></>}</div></div>}
+    {adminOpen && <div className="modal-backdrop" onClick={() => setAdminOpen(false)}><div className="admin-panel" onClick={(e) => e.stopPropagation()}><button className="close-btn" onClick={() => setAdminOpen(false)}>{icon('close', 22)}</button><p className="eyebrow">LUNÉA STUDIO</p><h2>Store administration</h2><p className="admin-intro">List and manage products without editing the website source code.</p>{profile?.role !== 'admin' ? <div className="setup-note">Admin access requires a profile with role <b>admin</b>. Apply supabase/schema.sql, then promote your owner account in the Supabase SQL editor.</div> : <div className="admin-grid"><form className="product-form" onSubmit={publishProduct}><h3>List a product</h3><input required value={adminProduct.name} onChange={(e) => setAdminProduct({...adminProduct,name:e.target.value})} placeholder="Product name" /><input required value={adminProduct.category} onChange={(e) => setAdminProduct({...adminProduct,category:e.target.value})} placeholder="Category" /><input value={adminProduct.type} onChange={(e) => setAdminProduct({...adminProduct,type:e.target.value})} placeholder="Product type" /><div className="two"><input required type="number" step="0.01" value={adminProduct.price} onChange={(e) => setAdminProduct({...adminProduct,price:e.target.value})} placeholder="Price" /><input type="number" value={adminProduct.stock} onChange={(e) => setAdminProduct({...adminProduct,stock:e.target.value})} placeholder="Stock" /></div><input value={adminProduct.size} onChange={(e) => setAdminProduct({...adminProduct,size:e.target.value})} placeholder="Size" /><input required value={adminProduct.image_url} onChange={(e) => setAdminProduct({...adminProduct,image_url:e.target.value})} placeholder="Product image URL" /><input value={adminProduct.tags} onChange={(e) => setAdminProduct({...adminProduct,tags:e.target.value})} placeholder="Tags, comma separated" /><textarea required value={adminProduct.description} onChange={(e) => setAdminProduct({...adminProduct,description:e.target.value})} placeholder="Product description" /><button className="button dark full">Publish product</button></form><div className="admin-products"><h3>Catalogue</h3>{adminProducts.map(p => <div className="admin-row" key={p.id}><img src={p.image_url} alt="" /><div><strong>{p.name}</strong><small>{p.category} · $</small></div></div>)}</div></div>}</div></div>}
+
   </div>;
 }
 
